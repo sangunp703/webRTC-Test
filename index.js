@@ -16,7 +16,10 @@ let socketToRoom = {};
 const maximum = 2;
 
 io.on('connection', (socket) => {
-  console.log('connect');
+  console.log('insert');
+  socket.on('connect', () => {
+    console.log(`[${socketToRoom[socket.id]}]: ${socket.id} connect`);
+  });
   socket.on('join_room', (data) => {
     console.log('request join_room');
     if (users[data.room]) {
