@@ -1,7 +1,7 @@
-let express = require('express');
-let http = require('http');
+const express = require('express');
+const path = require('path');
+const http = require('http');
 let app = express();
-let cors = require('cors');
 let httpServer = http.createServer(app);
 let { Server } = require('socket.io');
 let io = new Server(httpServer, {
@@ -12,13 +12,17 @@ let io = new Server(httpServer, {
   }
 });
 
-app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static('public'));
+
+app.get('/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, '/public/client.html'));
+});
+
 const PORT = process.env.PORT || 23000;
-
 let rooms = {};
-
 let socketToRoom = {};
-
 const maximum = 4;
 
 io.on('connection', (socket) => {
@@ -137,7 +141,7 @@ io.on('connection', (socket) => {
       }
     }
 
-    socket.broadcast.to(room).emit('userExit', { id: socket.id });
+    // socket.broadcast.to(room).emit('userExit', { id: socket.id });
   });
 });
 
