@@ -4,7 +4,13 @@ let app = express();
 let cors = require('cors');
 let httpServer = http.createServer(app);
 let { Server } = require('socket.io');
-let io = new Server(httpServer, {});
+let io = new Server(httpServer, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+    allowedHeaders: '*'
+  }
+});
 
 app.use(cors());
 const PORT = process.env.PORT || 23000;
