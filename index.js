@@ -2,12 +2,12 @@ let express = require('express');
 let http = require('http');
 let app = express();
 let cors = require('cors');
-let server = http.createServer(app);
-let socketio = require('socket.io');
-let io = socketio.listen(server);
+let httpServer = http.createServer(app);
+let { Server } = require('socket.io');
+let io = new Server(httpServer, {});
 
 app.use(cors());
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 23000;
 
 let rooms = {};
 
@@ -135,6 +135,6 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`server running on ${PORT}`);
 });
