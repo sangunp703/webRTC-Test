@@ -9,41 +9,88 @@ let io = socketio.listen(server);
 app.use(cors());
 const PORT = process.env.PORT || 8080;
 
-let users = {};
+let rooms = {};
 
 let socketToRoom = {};
 
-const maximum = 2;
+const maximum = 4;
 
 io.on('connection', (socket) => {
-  console.log('insert');
-  socket.on('connect', () => {
-    console.log(`[${socketToRoom[socket.id]}]: ${socket.id} connect`);
-  });
-  socket.on('join_room', (data) => {
-    console.log('request join_room');
-    if (users[data.room]) {
-      const length = users[data.room].length;
+  console.log('connection');
+
+  // 관리자 전용 방 호출
+  socket.on('createRoom', (data) => {
+    console.log('Create Room : ', data);
+    if (rooms[data.room]) {
+      // 방이 가득 찬경우
+      const length = rooms[data.room].length;
       if (length === maximum) {
-        socket.to(socket.id).emit('room_full');
+        io.sockets.to(socket.id).emit('roomFull');
         return;
       }
-      users[data.room].push({ id: socket.id });
+      // 기존 방에 참여
+      rooms[data.room].push({ id: socket.id, type: 'HOST' });
+      io.sockets.to(socket.id).emit('roomJoin');
+      console.log(
+        `[${socketToRoom[socket.id]}]. ROOM ${data.room} Joined. GUEST : ${
+          socket.id
+        }`
+      );
     } else {
-      users[data.room] = [{ id: socket.id }];
+      // 방 새로 생성
+      rooms[data.room] = [{ id: socket.id, type: 'HOST' }];
+      io.sockets.to(socket.id).emit('roomCreate');
+      console.log(
+        `[${socketToRoom[socket.id]}] ROOM ${data.room} Created. HOST : ${
+          socket.id
+        }`
+      );
     }
     socketToRoom[socket.id] = data.room;
-
     socket.join(data.room);
-    console.log(`[${socketToRoom[socket.id]}]: ${socket.id} enter`);
 
-    const usersInThisRoom = users[data.room].filter(
+    const usersInThisRoom = rooms[data.room].filter(
+      (user) => user.id !== socket.id
+    );
+    console.log('Users In This Room : ', usersInThisRoom);
+
+    io.sockets.to(socket.id).emit('allUsers', usersInThisRoom);
+  });
+
+  // 장비 전용 방 호출
+  socket.on('joinRoom', (data) => {
+    console.log('Join Room : ', data);
+    if (rooms[data.room]) {
+      // 기존 방에 참여
+      rooms[data.room].push({ id: socket.id, type: 'GUEST' });
+      io.sockets.to(socket.id).emit('roomJoin');
+    } else {
+      // 방이 존재하지 않음
+      io.sockets.to(socket.id).emit('invalidRoom');
+      return;
+    }
+    socketToRoom[socket.id] = data.room;
+    socket.join(data.room);
+
+    const usersInThisRoom = rooms[data.room].filter(
       (user) => user.id !== socket.id
     );
 
-    console.log(usersInThisRoom);
+    console.log('Users In This Room : ', usersInThisRoom);
 
-    io.sockets.to(socket.id).emit('all_users', usersInThisRoom);
+    io.sockets.to(socket.id).emit('allUsers', usersInThisRoom);
+  });
+
+  // 장비 전용 방 호출
+  socket.on('checkRoom', (data) => {
+    console.log('Check Room : ', data);
+    if (rooms[data.room]) {
+      // 방이 존재
+      io.sockets.to(socket.id).emit('validRoom');
+    } else {
+      // 방이 존재하지 않음
+      io.sockets.to(socket.id).emit('invalidRoom');
+    }
   });
 
   socket.on('offer', (sdp) => {
@@ -62,19 +109,29 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    // 방장이 로그아웃 한경우 방 폭파
     console.log(`[${socketToRoom[socket.id]}]: ${socket.id} exit`);
     const roomID = socketToRoom[socket.id];
-    let room = users[roomID];
+    let room = rooms[roomID];
     if (room) {
       room = room.filter((user) => user.id !== socket.id);
-      users[roomID] = room;
+      rooms[roomID] = room;
       if (room.length === 0) {
-        delete users[roomID];
+        delete rooms[roomID];
+        return;
+      }
+      // 관리자가 한명도 없는 경우 방 삭제
+      let hosts = room.filter((user) => user.type == 'HOST');
+      if (hosts.length === 0) {
+        for (let i in room) {
+          delete socketToRoom[room[i].id];
+        }
+        delete rooms[roomID];
         return;
       }
     }
-    socket.broadcast.to(room).emit('user_exit', { id: socket.id });
-    console.log(users);
+
+    socket.broadcast.to(room).emit('userExit', { id: socket.id });
   });
 });
 
