@@ -23,60 +23,48 @@ app.get('/:id', (req, res) => {
 const PORT = process.env.PORT || 23000;
 let rooms = {};
 let socketToRoom = {};
-const maximum = 4;
+const MAXIMUM = process.env.MAX || 5;
 
 io.on('connection', (socket) => {
   console.log('connection');
 
-  // 관리자 전용 방 호출
+  // 관중 전용 방 호출
   socket.on('createRoom', (data) => {
     console.log('Create Room : ', data);
+
     if (rooms[data.room]) {
-      // 방이 가득 찬경우
-      const length = rooms[data.room].length;
-      if (length === maximum) {
-        io.sockets.to(socket.id).emit('roomFull');
+      // 방에 참여
+      if (rooms[data.room].length > MAXIMUM) {
+        socket.to(socket.id).emit('fullRoom');
         return;
       }
-      // 기존 방에 참여
-      rooms[data.room].push({ id: socket.id, type: 'HOST' });
-      io.sockets.to(socket.id).emit('roomJoin');
-      console.log(
-        `[${socketToRoom[socket.id]}]. ROOM ${data.room} Joined. GUEST : ${
-          socket.id
-        }`
-      );
+      rooms[data.room].push({ id: socket.id, type: 'AUDIENCE' });
+      console.log(`ROOM ${data.room} Joined. AUDIENCE : ${socket.id}`);
     } else {
       // 방 새로 생성
-      rooms[data.room] = [{ id: socket.id, type: 'HOST' }];
-      io.sockets.to(socket.id).emit('roomCreate');
-      console.log(
-        `[${socketToRoom[socket.id]}] ROOM ${data.room} Created. HOST : ${
-          socket.id
-        }`
-      );
+      rooms[data.room] = [{ id: socket.id, type: 'AUDIENCE' }];
+      console.log(`ROOM ${data.room} Created. AUDIENCE : ${socket.id}`);
     }
+
     socketToRoom[socket.id] = data.room;
     socket.join(data.room);
 
-    const usersInThisRoom = rooms[data.room].filter(
-      (user) => user.id !== socket.id
+    const streamer = rooms[data.room].filter(
+      (user) => user.type === 'STREAMER'
     );
-    console.log('Users In This Room : ', usersInThisRoom);
-
-    io.sockets.to(socket.id).emit('allUsers', usersInThisRoom);
+    // 스트리머 정보 전달
+    io.sockets.to(socket.id).emit('getStreamer', streamer);
   });
 
-  // 장비 전용 방 호출
+  // 스트리머 전용 방 호출
   socket.on('joinRoom', (data) => {
-    console.log('Join Room : ', data);
     if (rooms[data.room]) {
-      // 기존 방에 참여
-      rooms[data.room].push({ id: socket.id, type: 'GUEST' });
-      io.sockets.to(socket.id).emit('roomJoin');
+      rooms[data.room].push({
+        id: socket.id,
+        type: 'STREAMER'
+      });
     } else {
-      // 방이 존재하지 않음
-      io.sockets.to(socket.id).emit('invalidRoom');
+      socket.to(socket.id).emit('invalidRoom');
       return;
     }
     socketToRoom[socket.id] = data.room;
@@ -86,14 +74,12 @@ io.on('connection', (socket) => {
       (user) => user.id !== socket.id
     );
 
-    console.log('Users In This Room : ', usersInThisRoom);
-
-    io.sockets.to(socket.id).emit('allUsers', usersInThisRoom);
+    // 방에 입장한 관중 정보 전달
+    io.sockets.to(socket.id).emit('getAudience', usersInThisRoom);
   });
 
-  // 장비 전용 방 호출
+  // 스트리머 전용 방 검사
   socket.on('checkRoom', (data) => {
-    console.log('Check Room : ', data);
     if (rooms[data.room]) {
       // 방이 존재
       io.sockets.to(socket.id).emit('validRoom');
@@ -103,45 +89,59 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('offer', (sdp) => {
-    console.log('offer: ' + socket.id);
-    socket.broadcast.emit('getOffer', sdp);
+  // 특정 대상에게 자신을 붙여달라는 요청
+  socket.on('offer', (data) => {
+    socket.to(data.offerReceiveID).emit('getOffer', {
+      sdp: data.sdp,
+      offerSendID: data.offerSendID
+    });
+    console.log('offer', data.offerSendID, '=>', data.offerReceiveID);
   });
 
-  socket.on('answer', (sdp) => {
-    console.log('answer: ' + socket.id);
-    socket.broadcast.emit('getAnswer', sdp);
+  // 붙여달라는 요청에 대한 승낙
+  socket.on('answer', (data) => {
+    socket
+      .to(data.answerReceiveID)
+      .emit('getAnswer', { sdp: data.sdp, answerSendID: data.answerSendID });
+    console.log('answer', data.answerSendID, '=>', data.answerReceiveID);
   });
 
-  socket.on('candidate', (candidate) => {
-    console.log('candidate: ' + socket.id);
-    socket.broadcast.emit('getCandidate', candidate);
+  // 사용자 등록
+  socket.on('candidate', (data) => {
+    socket.to(data.candidateReceiveID).emit('getCandidate', {
+      candidate: data.candidate,
+      candidateSendID: data.candidateSendID
+    });
+    console.log(
+      'candidate',
+      data.candidateSendID,
+      '=>',
+      data.candidateReceiveID
+    );
   });
 
+  // 연결 종료
   socket.on('disconnect', () => {
-    // 방장이 로그아웃 한경우 방 폭파
     console.log(`[${socketToRoom[socket.id]}]: ${socket.id} exit`);
     const roomID = socketToRoom[socket.id];
     let room = rooms[roomID];
     if (room) {
+      // 방이 빈 경우 방 삭제
       room = room.filter((user) => user.id !== socket.id);
       rooms[roomID] = room;
       if (room.length === 0) {
         delete rooms[roomID];
         return;
       }
-      // 관리자가 한명도 없는 경우 방 삭제
-      let hosts = room.filter((user) => user.type == 'HOST');
-      if (hosts.length === 0) {
-        for (let i in room) {
-          delete socketToRoom[room[i].id];
-        }
+      // 관중이 없는 경우 방 삭제
+      let audience = room.filter((user) => user.type === 'AUDIENCE');
+      if (audience.length === 0) {
         delete rooms[roomID];
         return;
       }
     }
-
-    // socket.broadcast.to(room).emit('userExit', { id: socket.id });
+    socket.to(roomID).emit('userExit', { id: socket.id });
+    console.log(`current ${roomID} users : ${rooms[roomID]}`);
   });
 });
 

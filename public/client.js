@@ -5,6 +5,7 @@ const PC_CONFIG = {
     }
   ]
 };
+// URL로 부터 장비 이름을 추출
 let part = window.location.href.split('/');
 if (
   part.length > 1 &&
@@ -14,94 +15,147 @@ if (
   const DEVICE_ID = part[part.length - 1];
   const SOCKET_SERVER_URL = `https://${DEVICE_ID}-cam.lt.thingbine.com`;
   const socketRef = io(SOCKET_SERVER_URL);
-  const pcRef = new RTCPeerConnection(PC_CONFIG);
+  let localStreamRef = null;
+  let pcsRef = {};
 
-  socketRef.on('allUsers', (allUsers) => {
-    if (allUsers.length > 0) {
-      createOffer();
+  getLocalStream();
+
+  // 방에 입장하여 관중 정보 획득한 경우
+  socketRef.on('getAudience', (audience) => {
+    // 관중 마다 RTC 피어를 생성하고 접속 요청
+    audience.forEach(async (user) => {
+      if (!localStreamRef) return;
+      const pc = createPeerConnection(user.id);
+      if (!(pc && socketRef)) return;
+      pcsRef = { ...pcsRef, [user.id]: pc };
+      try {
+        const localSdp = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
+        console.log('create offer success');
+        await pc.setLocalDescription(new RTCSessionDescription(localSdp));
+        socketRef.emit('offer', {
+          sdp: localSdp,
+          offerSendID: socketRef.id,
+          offerReceiveID: user.id
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    });
+  });
+
+  // 접속 요청 받은 경우
+  socketRef.on('getOffer', async (data) => {
+    const { sdp, offerSendID } = data;
+    console.log('get offer');
+    if (!localStreamRef) return;
+    const pc = createPeerConnection(offerSendID);
+    if (!(pc && socketRef)) return;
+    pcsRef = { ...pcsRef, [offerSendID]: pc };
+    try {
+      // 로컬 피어 등록
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      console.log('answer set remote description success');
+      const localSdp = await pc.createAnswer({
+        offerToReceiveVideo: true,
+        offerToReceiveAudio: true
+      });
+      // 원격 피어 등록하고 로컬 피어를 전달
+      await pc.setLocalDescription(new RTCSessionDescription(localSdp));
+      socketRef.emit('answer', {
+        sdp: localSdp,
+        answerSendID: socketRef.id,
+        answerReceiveID: offerSendID
+      });
+    } catch (e) {
+      console.error(e);
     }
   });
 
-  socketRef.on('getOffer', (sdp) => {
-    console.log('get offer');
-    createAnswer(sdp);
-  });
-
-  socketRef.on('getAnswer', (sdp) => {
+  // 접속 허가를 받은 경우
+  socketRef.on('getAnswer', (data) => {
+    const { sdp, answerSendID } = data;
     console.log('get answer');
-    if (!pcRef) return;
-    pcRef.setRemoteDescription(new RTCSessionDescription(sdp));
+    const pc = pcsRef[answerSendID];
+    if (!pc) return;
+    // 원격 피어 등록
+    pc.setRemoteDescription(new RTCSessionDescription(sdp));
   });
 
-  socketRef.on('getCandidate', async (candidate) => {
-    if (!pcRef) return;
-    await pcRef.addIceCandidate(new RTCIceCandidate(candidate));
+  // 요청 등록이 온 경우
+  socketRef.on('getCandidate', async (data) => {
+    console.log('get candidate');
+    const pc = pcsRef[data.candidateSendID];
+    if (!pc) return;
+    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
     console.log('candidate add success');
   });
 
-  setVideoTracks();
+  // 특정 유저가 나간 경우
+  socketRef.on('userExit', (data) => {
+    // 해당 피어가 존재하면 제거
+    if (!pcsRef[data.id]) return;
+    pcsRef[data.id].close();
+    delete pcsRef[data.id];
+  });
 
-  async function setVideoTracks() {
+  async function getLocalStream() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
+      // 로컬 스트림 획득
+      const localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true
       });
-      if (!(pcRef && socketRef)) return;
-      stream.getTracks().forEach((track) => {
-        if (!pcRef) return;
-        pcRef.addTrack(track, stream);
-      });
-      pcRef.onicecandidate = (e) => {
-        if (e.candidate) {
-          if (!socketRef) return;
-          console.log('onicecandidate');
-          socketRef.emit('candidate', e.candidate);
-        }
-      };
-      pcRef.oniceconnectionstatechange = (e) => {
-        console.log(e);
-      };
-      pcRef.ontrack = (ev) => {
-        console.log('add remotetrack success');
-      };
+      localStreamRef = localStream;
+      if (!socketRef) return;
+      // 방에 참여
       socketRef.emit('joinRoom', {
         room: DEVICE_ID
       });
     } catch (e) {
-      console.error(e);
+      console.log(`getUserMedia error: ${e}`);
     }
   }
 
-  async function createOffer() {
-    console.log('create offer');
-    if (!(pcRef && socketRef)) return;
+  function createPeerConnection(socketID) {
     try {
-      const sdp = await pcRef.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true
-      });
-      await pcRef.setLocalDescription(new RTCSessionDescription(sdp));
-      socketRef.emit('offer', sdp);
-    } catch (e) {
-      console.error(e);
-    }
-  }
+      const pc = new RTCPeerConnection(PC_CONFIG);
 
-  async function createAnswer(sdp) {
-    if (!(pcRef && socketRef)) return;
-    try {
-      await pcRef.setRemoteDescription(new RTCSessionDescription(sdp));
-      console.log('answer set remote description success');
-      const mySdp = await pcRef.createAnswer({
-        offerToReceiveVideo: true,
-        offerToReceiveAudio: true
-      });
-      console.log('create answer');
-      await pcRef.setLocalDescription(new RTCSessionDescription(mySdp));
-      socketRef.emit('answer', mySdp);
+      pc.onicecandidate = (e) => {
+        if (!(socketRef && e.candidate)) return;
+        console.log('onicecandidate');
+        socketRef.emit('candidate', {
+          candidate: e.candidate,
+          candidateSendID: socketRef.id,
+          candidateReceiveID: socketID
+        });
+      };
+
+      pc.oniceconnectionstatechange = (e) => {
+        console.log(e);
+      };
+
+      pc.ontrack = (e) => {
+        console.log('ontrack success');
+      };
+
+      if (localStreamRef) {
+        console.log('localstream add');
+        // 피어에 로컬 스트림을 등록
+        localStreamRef.getTracks().forEach((track) => {
+          if (!localStreamRef) return;
+          pc.addTrack(track, localStreamRef);
+        });
+      } else {
+        console.log('no local stream');
+      }
+
+      return pc;
     } catch (e) {
       console.error(e);
+      return undefined;
     }
   }
 }

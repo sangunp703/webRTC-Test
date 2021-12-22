@@ -1,7 +1,5 @@
 const puppeteer = require('puppeteer');
 const io = require('socket.io-client');
-// require('dotenv').config();
-
 const SOCKET_SERVER_URL = 'http://localhost:23000';
 const socketRef = io(SOCKET_SERVER_URL);
 const DEVICE_ID = process.env.DEVICE_ID;
